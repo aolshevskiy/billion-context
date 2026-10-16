@@ -71,7 +71,30 @@ export function buildFromSourcePlan(state, options) {
     return "dist/ is missing in a source install — building it (npm run build)";
 }
 
+function ensureBuildTooling(root) {
+    const marker = path.join(root, "node_modules", "tsup");
+    if (existsSync(marker)) return true;
+    console.log("dist-ready: installing the build's own dependencies (npm ci --ignore-scripts)");
+    // The invocation that reaches here can be a global git install, where the package
+    // manager has installed production dependencies only — and it exports its own
+    // npm_config_* / npm_lifecycle_* settings, which would otherwise turn this nested
+    // install global or re-enter prepare. Strip them and set ignore-scripts: the
+    // bootstrapped install must not run lifecycle scripts of its own.
+    const env = { ...process.env };
+    for (const key of Object.keys(env)) {
+        if (/^npm_config_/i.test(key) || /^npm_lifecycle_/i.test(key) || /^npm_package_/i.test(key)) delete env[key];
+    }
+    env.npm_config_global = "false";
+    env.npm_config_ignore_scripts = "true";
+    const args = existsSync(path.join(root, "package-lock.json"))
+        ? ["ci", "--ignore-scripts", "--no-audit", "--no-fund"]
+        : ["install", "--ignore-scripts", "--no-audit", "--no-fund"];
+    const result = spawnSync("npm", args, { cwd: root, stdio: "inherit", env });
+    return result.status === 0 && existsSync(marker);
+}
+
 function runBuild(root) {
+    if (!ensureBuildTooling(root)) return false;
     const result = spawnSync("npm", ["run", "build"], { cwd: root, stdio: "inherit", env: process.env });
     return result.status === 0 && distEntryReady(root);
 }
