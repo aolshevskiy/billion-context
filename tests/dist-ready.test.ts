@@ -5,10 +5,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 const gateSpec = "../scripts/check-dist-ready.mjs";
-const { distEntryReady, selfBuildableCheckout, distReadyVerdict } = await import(gateSpec) as {
+const { distEntryReady, selfBuildableCheckout, distReadyVerdict, buildFromSourcePlan } = await import(gateSpec) as {
     distEntryReady: (dir: string) => boolean;
     selfBuildableCheckout: (dir: string) => boolean;
     distReadyVerdict: (state: { distReady: boolean; selfBuildable: boolean; npmCommand?: string; localPrefix?: string; root?: string }) => { ok: boolean; reason: string };
+    buildFromSourcePlan: (state: { distReady: boolean; npmCommand?: string }, options: { buildFromSource: boolean }) => string | null;
 };
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -59,6 +60,23 @@ test("npm lane: prefix equal to root passes (dev/CI root install)", () => {
 test("prefix absent leaves the verdict unchanged in both directions", () => {
     assert.equal(distReadyVerdict({ distReady: false, selfBuildable: true, npmCommand: "install", localPrefix: undefined, root: undefined }).ok, true);
     assert.equal(distReadyVerdict({ distReady: false, selfBuildable: false, npmCommand: undefined, localPrefix: undefined, root: undefined }).ok, false);
+});
+
+test("fork flag: a source install without dist builds instead of refusing", () => {
+    // The exact lane the verdict refuses: a consuming install preparing a fetched copy.
+    assert.equal(typeof buildFromSourcePlan({ distReady: false, npmCommand: "install" }, { buildFromSource: true }), "string");
+    assert.equal(buildFromSourcePlan({ distReady: false, npmCommand: undefined }, { buildFromSource: true }) !== null, true);
+});
+
+test("fork flag: never builds for pack/publish, and never when dist is present", () => {
+    assert.equal(buildFromSourcePlan({ distReady: false, npmCommand: "pack" }, { buildFromSource: true }), null);
+    assert.equal(buildFromSourcePlan({ distReady: false, npmCommand: "publish" }, { buildFromSource: true }), null);
+    assert.equal(buildFromSourcePlan({ distReady: true, npmCommand: "install" }, { buildFromSource: true }), null);
+});
+
+test("fork flag: absent flag leaves every verdict untouched", () => {
+    assert.equal(buildFromSourcePlan({ distReady: false, npmCommand: "install" }, { buildFromSource: false }), null);
+    assert.equal(buildFromSourcePlan({ distReady: false, npmCommand: undefined }, { buildFromSource: false }), null);
 });
 
 test("markers read the filesystem: dist/index.js and .git", () => {

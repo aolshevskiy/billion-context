@@ -6,7 +6,16 @@
 // pass when dist/ is ready, pass when a dev checkout can build it itself,
 // and fail loudly — naming the supported install forms — for a consumer
 // source install.
+//
+// Fork addition (aolshevskiy/billion-context, branch install/prepare-builds-dist):
+// prepare also accepts --build-from-source, which turns the refusing lane into a
+// self-building one — a source install with no dist/ builds it instead of failing.
+// The toolchain is already present by then (package managers install the dev tree
+// before prepare), which is why the build is cheap here and impossible at the
+// verdict's own layer. pack/publish stay excluded: those hand bytes to a registry,
+// where a build would ship whatever the tree happened to contain.
 
+import { spawnSync } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
@@ -50,18 +59,44 @@ export function distReadyVerdict(state) {
     return { ok: false, reason: "source install without dist/ — main/bin/exports all point into dist/, so the package has no loadable entry" };
 }
 
+export const FORK_BUILD_FLAG = "--build-from-source";
+
+// Pure decision for the flag: build only when the tree has no dist/ to hand over
+// and the invocation is an install (never a pack/publish, which must ship what is
+// already there). Returns the log line to print, or null for "no build".
+export function buildFromSourcePlan(state, options) {
+    if (!options.buildFromSource) return null;
+    if (state.distReady) return null;
+    if (state.npmCommand === "pack" || state.npmCommand === "publish") return null;
+    return "dist/ is missing in a source install — building it (npm run build)";
+}
+
+function runBuild(root) {
+    const result = spawnSync("npm", ["run", "build"], { cwd: root, stdio: "inherit", env: process.env });
+    return result.status === 0 && distEntryReady(root);
+}
+
 const invoked = process.argv[1];
 // Realpath both sides: Node resolves entry-point symlinks, so argv[1] can differ from import.meta.url
 const isMain = !!invoked && realpathSync(fileURLToPath(import.meta.url)) === realpathSync(invoked);
 if (isMain) {
     const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
-    const verdict = distReadyVerdict({
+    const state = {
         distReady: distEntryReady(root),
         selfBuildable: selfBuildableCheckout(root),
         npmCommand: process.env.npm_command,
         localPrefix: process.env.npm_config_local_prefix,
         root,
-    });
+    };
+    const plan = buildFromSourcePlan(state, { buildFromSource: process.argv.includes(FORK_BUILD_FLAG) });
+    if (plan) {
+        console.log(`dist-ready: ${plan}`);
+        if (!runBuild(root)) {
+            console.error(`dist-ready: FAIL — the source build left no ${path.join("dist", "index.js")}.`);
+            process.exit(1);
+        }
+    }
+    const verdict = distReadyVerdict({ ...state, distReady: distEntryReady(root) });
     if (!verdict.ok) {
         console.error(`dist-ready: FAIL — ${verdict.reason}.`);
         console.error("dist-ready: install the published package instead of the git source:");
